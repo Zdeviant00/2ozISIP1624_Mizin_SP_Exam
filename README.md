@@ -759,3 +759,455 @@ int main() {
 }</code></pre>
 
 </details>
+
+---
+
+### Задача 6: Работать с анонимными и именованными каналами
+
+<details>
+<summary><b>Показать решение</b></summary>
+
+**Условие:** Система из трех процессов. Анонимный канал для связи A и B, именованный для A и C.
+
+#### Как создать проекты в Visual Studio
+Создаю два проекта: `Coordinator` (процессы A и B) и `OddProcessor` (процесс C). Запускаю сначала OddProcessor, потом Coordinator.
+
+**Код Coordinator (Процессы A и B)**
+
+<pre><code class="language-cpp">#include &lt;windows.h&gt;
+#include &lt;iostream&gt;
+
+using namespace std;
+
+// Функция для Процесса B (работает в потоке)
+DWORD WINAPI ProcessB(LPVOID param) {
+    HANDLE* pipes = (HANDLE*)param;
+    HANDLE hRead = pipes[0];
+    HANDLE hWrite = pipes[1];
+
+    int number;
+    DWORD bytesRead;
+    // Читаю из анонимного канала, пока родитель не закроет его
+    while (ReadFile(hRead, &amp;number, sizeof(int), &amp;bytesRead, NULL) &amp;&amp; bytesRead &gt; 0) {
+        int square = number * number;
+        WriteFile(hWrite, &amp;square, sizeof(int), &amp;bytesRead, NULL);
+    }
+    return 0;
+}
+
+int main() {
+    SetConsoleCP(1251);
+    SetConsoleOutputCP(1251);
+
+    // 1. Создаю анонимный канал (CreatePipe)
+    HANDLE hRead, hWrite;
+    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE }; // TRUE = наследовать
+    CreatePipe(&amp;hRead, &amp;hWrite, &amp;sa, 0);
+
+    // 2. Запускаю Процесс B в потоке
+    HANDLE hThread = CreateThread(NULL, 0, ProcessB, new HANDLE[2]{hRead, hWrite}, 0, NULL);
+
+    // 3. Подключаюсь к Процессу C через ИМЕНОВАННЫЙ канал
+    cout &lt;&lt; "Подключение к Процессу C...\n";
+    HANDLE hNamed = CreateFileA("\\\\.\\pipe\\coord_fifo", GENERIC_WRITE | GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+    
+    if (hNamed == INVALID_HANDLE_VALUE) {
+        cerr &lt;&lt; "Процесс C не запущен!\n";
+        return 1;
+    }
+
+    // 4. Отправляю числа
+    int numbers[] = {5, 12, 7, 4, 9};
+    DWORD written, bytesRead;
+
+    for (int num : numbers) {
+        if (num % 2 == 0) {
+            // Четное -&gt; в анонимный канал (Процессу B)
+            WriteFile(hWrite, &amp;num, sizeof(int), &amp;written, NULL);
+            int res;
+            ReadFile(hRead, &amp;res, sizeof(int), &amp;bytesRead, NULL);
+            cout &lt;&lt; "Число " &lt;&lt; num &lt;&lt; " (четное). Квадрат от B: " &lt;&lt; res &lt;&lt; "\n";
+        } else {
+            // Нечетное -&gt; в именованный канал (Процессу C)
+            WriteFile(hNamed, &amp;num, sizeof(int), &amp;written, NULL);
+            long long res;
+            ReadFile(hNamed, &amp;res, sizeof(long long), &amp;bytesRead, NULL);
+            cout &lt;&lt; "Число " &lt;&lt; num &lt;&lt; " (нечетное). Факториал от C: " &lt;&lt; res &lt;&lt; "\n";
+        }
+    }
+
+    // 5. Освобождаю ресурсы
+    CloseHandle(hWrite);
+    CloseHandle(hRead);
+    CloseHandle(hNamed);
+    WaitForSingleObject(hThread, INFINITE);
+    CloseHandle(hThread);
+
+    cout &lt;&lt; "Нажмите Enter...";
+    cin.get();
+    return 0;
+}</code></pre>
+
+**Код OddProcessor (Процесс C)**
+
+<pre><code class="language-cpp">#include &lt;windows.h&gt;
+#include &lt;iostream&gt;
+
+using namespace std;
+
+long long Factorial(int n) {
+    long long res = 1;
+    for (int i = 2; i &lt;= n; i++) res *= i;
+    return res;
+}
+
+int main() {
+    SetConsoleCP(1251);
+    SetConsoleOutputCP(1251);
+
+    // Создаю именованный канал как сервер
+    HANDLE hNamed = CreateNamedPipeA("\\\\.\\pipe\\coord_fifo", PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_WAIT, 1, 256, 256, 0, NULL);
+    
+    cout &lt;&lt; "Ожидание подключения...\n";
+    ConnectNamedPipe(hNamed, NULL); // Блокируюсь, пока не подключится клиент
+    cout &lt;&lt; "Клиент подключился!\n";
+
+    int number;
+    DWORD bytesRead, written;
+
+    while (ReadFile(hNamed, &amp;number, sizeof(int), &amp;bytesRead, NULL) &amp;&amp; bytesRead &gt; 0) {
+        long long fact = Factorial(number);
+        WriteFile(hNamed, &amp;fact, sizeof(long long), &amp;written, NULL);
+    }
+
+    DisconnectNamedPipe(hNamed);
+    CloseHandle(hNamed);
+    
+    cout &lt;&lt; "Нажмите Enter...";
+    cin.get();
+    return 0;
+}</code></pre>
+
+</details>
+
+---
+
+### Задача 7: Создавать и использовать DLL библиотеки
+
+<details>
+<summary><b>Показать решение</b></summary>
+
+**Условие:** Создать DLL с функциями и протестировать её через явную загрузку.
+
+#### Как создать проекты в Visual Studio
+1. Проект **"Динамически подключаемая библиотека (DLL)"** -> имя `MathDLL`. В начало кода добавить `#include "pch.h"`.
+2. Проект **"Консольное приложение"** -> имя `MathClient`.
+3. Скопировать `MathDLL.dll` из папки Debug DLL в папку Debug Клиента.
+
+**Код DLL (MathDLL.cpp)**
+
+<pre><code class="language-cpp">#include "pch.h" // Обязательно для Visual Studio
+#include &lt;windows.h&gt;
+
+// extern "C" отключает искажение имен, __declspec(dllexport) добавляет в таблицу экспорта
+#define EXPORT extern "C" __declspec(dllexport)
+
+EXPORT int Add(int a, int b) {
+    return a + b;
+}
+
+EXPORT long long Factorial(int n) {
+    if (n &lt; 0) return 0;
+    long long res = 1;
+    for (int i = 2; i &lt;= n; i++) res *= i;
+    return res;
+}
+
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
+    return TRUE;
+}</code></pre>
+
+**Код Клиента (MathClient.cpp)**
+
+<pre><code class="language-cpp">#include &lt;windows.h&gt;
+#include &lt;iostream&gt;
+
+using namespace std;
+
+// Объявляю типы указателей на функции, которые буду искать в DLL
+typedef int (*AddFunc)(int, int);
+typedef long long (*FactFunc)(int);
+
+int main() {
+    SetConsoleCP(1251);
+    SetConsoleOutputCP(1251);
+
+    // Явно загружаю DLL в память процесса
+    HINSTANCE hDll = LoadLibrary("MathDLL.dll");
+    if (!hDll) {
+        cerr &lt;&lt; "DLL не найдена!\n";
+        return 1;
+    }
+
+    // Получаю адреса функций по их точным именам
+    AddFunc pAdd = (AddFunc)GetProcAddress(hDll, "Add");
+    FactFunc pFact = (FactFunc)GetProcAddress(hDll, "Factorial");
+
+    if (pAdd &amp;&amp; pFact) {
+        cout &lt;&lt; "Add(5, 3) = " &lt;&lt; pAdd(5, 3) &lt;&lt; "\n";
+        cout &lt;&lt; "Factorial(5) = " &lt;&lt; pFact(5) &lt;&lt; "\n";
+    }
+
+    // Выгружаю DLL из памяти
+    FreeLibrary(hDll);
+    
+    cout &lt;&lt; "Нажмите Enter...";
+    cin.get();
+    return 0;
+}</code></pre>
+
+</details>
+
+---
+
+### Задача 8: Разрабатывать системные сервисы/демоны
+
+<details>
+<summary><b>Показать решение</b></summary>
+
+**Условие:** Создать простой Windows-сервис.
+
+#### Как создать проект в Visual Studio
+1. **Файл → Создать → Проект** → **"Консольное приложение"** (C++)
+2. Имя: `SimpleService`
+3. Установить и запустить сервис нужно через командную строку **от имени администратора**.
+
+<pre><code class="language-cpp">#include &lt;windows.h&gt;
+#include &lt;iostream&gt;
+#include &lt;fstream&gt;
+
+using namespace std;
+
+SERVICE_STATUS ServiceStatus;
+SERVICE_STATUS_HANDLE hStatus;
+bool bRunning = true;
+
+// Функция записи в лог-файл
+void WriteLog(const char* msg) {
+    ofstream log("C:\\service_log.txt", ios::app);
+    log &lt;&lt; msg &lt;&lt; "\n";
+}
+
+// Обработчик команд от Диспетчера служб (SCM)
+void WINAPI CtrlHandler(DWORD control) {
+    if (control == SERVICE_CONTROL_STOP) {
+        bRunning = false;
+        ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+    }
+    SetServiceStatus(hStatus, &amp;ServiceStatus);
+}
+
+// Главная функция сервиса
+void WINAPI ServiceMain(DWORD argc, LPTSTR* argv) {
+    hStatus = RegisterServiceCtrlHandler("MySimpleService", CtrlHandler);
+    
+    ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
+    ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP;
+    SetServiceStatus(hStatus, &amp;ServiceStatus);
+
+    ServiceStatus.dwCurrentState = SERVICE_RUNNING;
+    SetServiceStatus(hStatus, &amp;ServiceStatus);
+    WriteLog("Сервис запущен");
+
+    // Основной цикл работы
+    while (bRunning) {
+        WriteLog("Сервис работает...");
+        Sleep(5000); // Работает каждые 5 секунд
+    }
+
+    WriteLog("Сервис остановлен");
+    ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+    SetServiceStatus(hStatus, &amp;ServiceStatus);
+}
+
+int main() {
+    // Таблица сервисов — связывает имя сервиса с функцией ServiceMain
+    SERVICE_TABLE_ENTRY ServiceTable[] = {
+        {"MySimpleService", ServiceMain},
+        {NULL, NULL}
+    };
+    
+    // Передаю управление Диспетчеру служб Windows
+    StartServiceCtrlDispatcher(ServiceTable);
+    return 0;
+}</code></pre>
+
+**Команды для установки (в CMD от админа):**
+- `sc create MySimpleService binPath= "C:\путь\к\SimpleService.exe"`
+- `sc start MySimpleService`
+- `sc delete MySimpleService`
+
+</details>
+
+---
+
+### Задача 9: Управлять виртуальной памятью процесса
+
+<details>
+<summary><b>Показать решение</b></summary>
+
+**Условие:** Выделить блоки памяти, показать их адреса и освободить.
+
+#### Как создать проект в Visual Studio
+1. **Файл → Создать → Проект** → **"Консольное приложение"** (C++)
+2. Имя: `VirtualMemory`
+
+<pre><code class="language-cpp">#include &lt;windows.h&gt;
+#include &lt;iostream&gt;
+#include &lt;iomanip&gt;
+
+using namespace std;
+
+int main() {
+    SetConsoleCP(1251);
+    SetConsoleOutputCP(1251);
+
+    const size_t BLOCK_SIZE = 1024 * 1024; // 1 МБ
+    void* blocks[3];
+
+    cout &lt;&lt; "Выделяю 3 блока по 1 МБ:\n";
+    for (int i = 0; i &lt; 3; i++) {
+        // VirtualAlloc: NULL = адрес выберет ОС, MEM_COMMIT | MEM_RESERVE = выделить и зафиксировать
+        blocks[i] = VirtualAlloc(NULL, BLOCK_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        // Вывожу адрес в шестнадцатеричном формате
+        cout &lt;&lt; "Блок " &lt;&lt; i &lt;&lt; ": " &lt;&lt; hex &lt;&lt; blocks[i] &lt;&lt; dec &lt;&lt; "\n";
+    }
+
+    cout &lt;&lt; "\nРасстояние между блоками:\n";
+    for (int i = 0; i &lt; 2; i++) {
+        // Привожу указатели к числам, чтобы вычесть их друг из друга
+        uintptr_t addr1 = reinterpret_cast&lt;uintptr_t&gt;(blocks[i]);
+        uintptr_t addr2 = reinterpret_cast&lt;uintptr_t&gt;(blocks[i + 1]);
+        cout &lt;&lt; "Разница: " &lt;&lt; (addr2 - addr1) &lt;&lt; " байт\n";
+    }
+
+    cout &lt;&lt; "\nОсвобождаю память:\n";
+    for (int i = 0; i &lt; 3; i++) {
+        // VirtualFree с флагом MEM_RELEASE полностью освобождает регион
+        VirtualFree(blocks[i], 0, MEM_RELEASE);
+        cout &lt;&lt; "Блок " &lt;&lt; i &lt;&lt; " освобожден\n";
+    }
+
+    cout &lt;&lt; "Нажмите Enter...";
+    cin.get();
+    return 0;
+}</code></pre>
+
+</details>
+
+---
+
+### Задача 10: Реализовать вывод в буфер экрана/консоли
+
+<details>
+<summary><b>Показать решение</b></summary>
+
+**Условие:** Создать анимацию "дождя из символов" без мерцания.
+
+#### Как создать проект в Visual Studio
+1. **Файл → Создать → Проект** → **"Консольное приложение"** (C++)
+2. Имя: `MatrixRain`
+3. Запуск через `Ctrl+F5`, выход по клавише **Esc**.
+
+<pre><code class="language-cpp">#include &lt;windows.h&gt;
+#include &lt;cstdlib&gt;
+#include &lt;ctime&gt;
+#include &lt;iostream&gt;
+
+using namespace std;
+
+char getRandomSymbol() {
+    // Возвращаю случайный печатный символ (ASCII от 33 до 126)
+    return 33 + rand() % 94;
+}
+
+int main() {
+    srand(time(NULL));
+    system("mode con cols=80 lines=25");
+    Sleep(100);
+
+    // Получаю дескриптор стандартного вывода (консоли)
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+
+    // Узнаю размеры буфера экрана
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    GetConsoleScreenBufferInfo(hConsole, &amp;csbi);
+    int width = csbi.dwSize.X;
+    int height = csbi.dwSize.Y;
+
+    // Скрываю курсор, чтобы он не мигал во время анимации
+    CONSOLE_CURSOR_INFO cursorInfo;
+    GetConsoleCursorInfo(hConsole, &amp;cursorInfo);
+    cursorInfo.bVisible = FALSE;
+    SetConsoleCursorInfo(hConsole, &amp;cursorInfo);
+
+    // Параметры капель
+    const int DROPS = 40;
+    int x[40], y[40], speed[40], counter[40];
+    char symbol[40];
+
+    for (int i = 0; i &lt; DROPS; i++) {
+        x[i] = rand() % width;
+        y[i] = rand() % height;
+        symbol[i] = getRandomSymbol();
+        speed[i] = 1 + rand() % 3;
+        counter[i] = 0;
+    }
+
+    COORD pos;
+    DWORD written;
+    bool running = true;
+
+    while (running) {
+        // Выход по Esc
+        if (GetAsyncKeyState(VK_ESCAPE) &amp; 0x8000) running = false;
+
+        // Быстрая очистка экрана через WinAPI (вместо system("cls"))
+        pos.X = 0; pos.Y = 0;
+        FillConsoleOutputCharacter(hConsole, ' ', width * height, pos, &amp;written);
+        FillConsoleOutputAttribute(hConsole, 7, width * height, pos, &amp;written);
+
+        // Обновление и отрисовка капель
+        for (int i = 0; i &lt; DROPS; i++) {
+            counter[i]++;
+            if (counter[i] &gt;= speed[i]) {
+                counter[i] = 0;
+                y[i]++;
+                if (y[i] &gt;= height) {
+                    x[i] = rand() % width;
+                    y[i] = 0;
+                    symbol[i] = getRandomSymbol();
+                }
+            }
+            // Вывод символа
+            pos.X = (SHORT)x[i];
+            pos.Y = (SHORT)y[i];
+            FillConsoleOutputCharacter(hConsole, symbol[i], 1, pos, &amp;written);
+            // Установка ярко-зеленого цвета (атрибут 10)
+            FillConsoleOutputAttribute(hConsole, 10, 1, pos, &amp;written);
+        }
+
+        // Возвращаю курсор в начало, чтобы консоль не скроллилась
+        pos.X = 0; pos.Y = 0;
+        SetConsoleCursorPosition(hConsole, pos);
+        Sleep(33); // Задержка для ~30 FPS
+    }
+
+    // Восстанавливаю курсор перед выходом
+    cursorInfo.bVisible = TRUE;
+    SetConsoleCursorInfo(hConsole, &amp;cursorInfo);
+    return 0;
+}</code></pre>
+
+</details>
