@@ -211,4 +211,4 @@ int main() {
     cout << "Нажмите Enter для выхода...";
     cin.get();
     return 0;
-} 
+}
